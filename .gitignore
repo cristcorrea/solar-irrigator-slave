@@ -1,0 +1,33 @@
+build/
+**/build/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+compile_commands.json
+
+# IDF Component Manager
+managed_components/
+# (mantén 'dependencies.lock' versionado si lo usas)
+
+# Config locales
+sdkconfig
+sdkconfig.old
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secretos / credenciales
+*.pem *.crt *.cer *.der *.key *.p12 *.pfx
+.env*
+**/secrets/**
+**/private/**
+main/mqtt_credentials.h
+main/secrets.h
