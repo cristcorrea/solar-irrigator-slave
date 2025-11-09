@@ -1,0 +1,21 @@
+menu "Test Manager"
+config TEST_MANAGER
+    bool "Enable TEST manager (AT CLI via USB-Serial-JTAG)"
+    default y
+
+config TEST_MANAGER_BOOT_AT_WINDOW
+    bool "Enable AT window at boot (to switch mode without reflashing)"
+    depends on TEST_MANAGER
+    default y
+
+config TEST_MANAGER_BOOT_AT_MS
+    int "Boot AT window duration (ms)"
+    depends on TEST_MANAGER_BOOT_AT_WINDOW
+    range 200 10000
+    default 3000
+
+config TEST_MANAGER_START_ON_BOOT
+    bool "Start TEST CLI immediately on boot"
+    depends on TEST_MANAGER
+    default n
+endmenu

@@ -112,3 +112,9 @@ void led_check(){
     gpio_set_level(GPIO_NUM_0, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
 }
+
+void led_manager_set_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    // Si tu función interna se llama distinto, usa la correcta.
+    ws2812_send_color(r, g, b);
+}

@@ -11,5 +11,6 @@ idf_component_register(
         button_manager 
         esp_hw_support
         CJSON
+        test_manager
     PRIV_INCLUDE_DIRS "$ENV{IDF_PATH}/components/esp_hw_support/include"
 )

@@ -11,6 +11,7 @@
 #define FLOW_GPIO GPIO_NUM_1
 #define ML_PER_PULSE 2.5f
 
+static volatile bool s_stop_requested = false;  // <-- NUEVO
 static volatile int pulse_count = 0;
 static int flow_timeout_ms = 5000; // tiempo maximo sin pulsos antes de parar la bomba
 
@@ -55,6 +56,8 @@ void flow_sensor_controller_init()
 
 void pump_controller_irrigate(int ml)
 {
+    s_stop_requested = false;
+
     if (ml <= 0)
     {
         ESP_LOGW(TAG, "ml <= 0; nada que regar");
@@ -91,6 +94,11 @@ void pump_controller_irrigate(int ml)
     while (pulse_count < pulses_needed)
     {
         vTaskDelay(pdMS_TO_TICKS(check_period_ms));
+        if (s_stop_requested)
+        {
+            ESP_LOGW(TAG, "Manual STOP");
+            break;
+        }
 
         int current_pulse_count = pulse_count;
         int pulse_diff = current_pulse_count - last_pulse_count;
@@ -132,4 +140,10 @@ void pump_controller_irrigate(int ml)
     float ml_entregados = (float)pulse_count * ML_PER_PULSE;
     ESP_LOGI(TAG, "Irrigation finished. Pulses=%d/%d -> %.1f ml",
              pulse_count, pulses_needed, ml_entregados);
+}
+
+void pump_controller_stop(void)
+{
+    s_stop_requested = true;
+    gpio_set_level(PUMP_GPIO, 1); // OFF inmediato
 }

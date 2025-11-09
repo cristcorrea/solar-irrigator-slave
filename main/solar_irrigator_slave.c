@@ -19,6 +19,7 @@
 #include "esp_now.h"
 #include "button_manager.h"
 #include <time.h>
+#include "test_manager.h"
 
 #define TAG "MAIN"
 #define BOOST_GPIO GPIO_NUM_2
@@ -81,10 +82,37 @@ void app_main(void)
     ESP_LOGI(TAG, "[STATE 1] Inicio");
 
     ESP_ERROR_CHECK(nvs_flash_init());
+    /*
+    INICIO VERIFICACION MODO TEST
+    */
+#if CONFIG_TEST_MANAGER
+
+#if CONFIG_TEST_MANAGER_START_ON_BOOT
+    // Arranca DIRECTO al CLI de TEST. No ejecutes ventana de boot.
+    test_manager_start_cli(); // no retorna
+    return;
+#else
+    // Solo si NO forzamos TEST en el arranque, ofrecemos la ventana AT
+    test_manager_boot_at_window();
+
+    work_mode_t mode = WORK_MODE_STANDARD;
+    test_manager_nvs_get_mode(&mode);
+    if (mode == WORK_MODE_TEST)
+    {
+        test_manager_start_cli(); // no retorna
+        return;
+    }
+#endif // CONFIG_TEST_MANAGER_START_ON_BOOT
+
+#endif // CONFIG_TEST_MANAGER
+
+    /*
+    FIN VERIFICACION MODO TEST
+    */
+   
     // Aplicar zona horaria al BOOT (deep-sleep y power-on)
     setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
     tzset();
-
     SemaphoreHandle_t cfg_ready_sem = xSemaphoreCreateBinary();
     peer_manager_set_cfg_ready_semaphore(cfg_ready_sem);
 
@@ -142,7 +170,6 @@ void app_main(void)
     ESP_LOGI(TAG, "[STATE 7] Enviando datos al HUB");
     ESP_LOGI(TAG, "Datos: Temp=%s°C, Hum=%s%%, VBAT=%sV", temp_str, hum_str, vbat_str);
 
-
     // [STATE 5] Verificación de riego post-sync (tras recibir 'ts' y guardar config)
     ESP_LOGI(TAG, "[STATE 5] Verificando riego post-sync");
 
@@ -195,7 +222,7 @@ void app_main(void)
         ESP_LOGI(TAG, "Omito envío: esperando ACK/timeout");
         return; // o salta este ciclo/envío
     }
-    
+
     send_data_to_hub(atof(temp_str), atof(hum_str), atof(vbat_str), irrigation_done);
 
     if (xSemaphoreTake(cfg_ready_sem, pdMS_TO_TICKS(2500)) != pdTRUE)
