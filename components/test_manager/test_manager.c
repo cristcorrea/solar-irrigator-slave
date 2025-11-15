@@ -208,6 +208,7 @@ void test_manager_start_cli(void)
     sensor_manager_init();
     power_manager_init();
     pump_controller_init();
+    flow_sensor_controller_init();
     led_manager_init();
 
     tm_putln("\r\n=== TEST MANAGER (AT) ===");
