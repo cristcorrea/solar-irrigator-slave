@@ -118,3 +118,19 @@ void led_manager_set_rgb(uint8_t r, uint8_t g, uint8_t b)
     // Si tu función interna se llama distinto, usa la correcta.
     ws2812_send_color(r, g, b);
 }
+
+
+void led_manager_start_animation_2(uint8_t r, uint8_t g, uint8_t b)
+{   
+    gpio_set_level(GPIO_NUM_0, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "Empieza Animación Led");     
+    for (int i = 0; i < 5; i++)
+    {
+        led_manager_set_rgb(r, g, b);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        led_manager_set_rgb(0, 0, 0);
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    gpio_set_level(GPIO_NUM_0, 0);
+}

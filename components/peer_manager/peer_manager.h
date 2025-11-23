@@ -40,6 +40,7 @@ bool peer_manager_load_irrigation_config(uint8_t *hr, uint8_t *mn, uint8_t *days
 void peer_manager_log_saved_irrigation_config(void);
 bool pm_tx_try_lock(int timeout_ms);
 void pm_tx_unlock(void);
+void peer_manager_perform_cfg_ack_handshake(void);
 
 
 #endif // PEER_MANAGER_H
