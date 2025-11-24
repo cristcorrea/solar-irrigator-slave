@@ -26,6 +26,9 @@
 
 #define SOC_PM_SUPPORT_EXT0_WAKEUP 1
 
+
+static SemaphoreHandle_t s_tx_done_sem = NULL;
+static volatile esp_now_send_status_t s_last_tx_status = ESP_NOW_SEND_FAIL;
 bool sleep_mode_active = true;
 
 static void wait_hub_first_link_blocking(void)
@@ -70,6 +73,33 @@ static void wait_hub_first_link_blocking(void)
              hub_mac[3], hub_mac[4], hub_mac[5]);
 }
 
+static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
+{
+    s_last_tx_status = status;
+
+    if (s_tx_done_sem)
+    {
+        // Callback NO se ejecuta en ISR, se puede usar xSemaphoreGive normal
+        xSemaphoreGive(s_tx_done_sem);
+    }
+
+    if (mac_addr)
+    {
+        ESP_LOGI(TAG,
+                 "ESP-NOW TX %s a %02X:%02X:%02X:%02X:%02X:%02X",
+                 (status == ESP_NOW_SEND_SUCCESS) ? "OK" : "FAIL",
+                 mac_addr[0], mac_addr[1], mac_addr[2],
+                 mac_addr[3], mac_addr[4], mac_addr[5]);
+    }
+    else
+    {
+        ESP_LOGI(TAG,
+                 "ESP-NOW TX %s (destino desconocido)",
+                 (status == ESP_NOW_SEND_SUCCESS) ? "OK" : "FAIL");
+    }
+}
+
+
 static void send_data_to_hub(float temp, float hum, float vbat, bool irrigation_done)
 {
     uint8_t hub_mac[6];
@@ -96,8 +126,9 @@ static void send_data_to_hub(float temp, float hum, float vbat, bool irrigation_
     {
         esp_now_peer_info_t peer = {
             .channel = 0,
-            .ifidx = WIFI_IF_STA,
-            .encrypt = false};
+            .ifidx   = WIFI_IF_STA,
+            .encrypt = false
+        };
         memcpy(peer.peer_addr, target_mac, 6);
 
         esp_err_t err = esp_now_add_peer(&peer);
@@ -107,17 +138,89 @@ static void send_data_to_hub(float temp, float hum, float vbat, bool irrigation_
         }
     }
 
-    esp_err_t result = esp_now_send(target_mac, (uint8_t *)payload, strlen(payload));
+    const int max_retries = 3;
+    const TickType_t tx_wait_ticks = pdMS_TO_TICKS(300);
+    bool sent_ok = false;
 
-    if (result == ESP_OK)
+    for (int attempt = 0; attempt < max_retries; ++attempt)
     {
-        ESP_LOGI(TAG, "Datos enviados a %s: %s", has_mac ? "HUB" : "broadcast", payload);
+        if (attempt > 0)
+        {
+            ESP_LOGW(TAG, "Reintento de telemetría %d/%d hacia el HUB",
+                     attempt + 1, max_retries);
+        }
+
+        // Limpiar cualquier señal previo en el semáforo
+        if (s_tx_done_sem)
+        {
+            xSemaphoreTake(s_tx_done_sem, 0);
+        }
+
+        esp_err_t result = esp_now_send(target_mac,
+                                        (uint8_t *)payload,
+                                        strlen(payload));
+
+        if (result != ESP_OK)
+        {
+            // Error inmediato (no se ha puesto ni en cola)
+            ESP_LOGE(TAG, "Error inmediato en esp_now_send (intento %d): %s",
+                     attempt + 1, esp_err_to_name(result));
+            // Si es un problema permanente (NOT_INIT, etc.), no tiene sentido seguir
+            break;
+        }
+
+        if (!s_tx_done_sem)
+        {
+            // Sin semáforo: no podemos esperar al callback. Asumimos éxito si esp_now_send() fue OK
+            ESP_LOGW(TAG, "s_tx_done_sem nulo, no se espera ACK de TX. Asumiendo envío OK.");
+            sent_ok = true;
+            break;
+        }
+
+        // Esperar a que el callback de TX nos diga SUCCESS o FAIL
+        if (xSemaphoreTake(s_tx_done_sem, tx_wait_ticks) == pdTRUE)
+        {
+            if (s_last_tx_status == ESP_NOW_SEND_SUCCESS)
+            {
+                sent_ok = true;
+                break;
+            }
+            else
+            {
+                ESP_LOGW(TAG,
+                         "ESP-NOW TX FAIL al HUB (intento %d)",
+                         attempt + 1);
+                // se reintenta en siguiente vuelta del bucle
+            }
+        }
+        else
+        {
+            ESP_LOGW(TAG,
+                     "Timeout esperando callback de TX (intento %d)",
+                     attempt + 1);
+            // se reintenta en siguiente vuelta
+        }
+
+        // Pequeña pausa entre reintentos para no saturar el canal
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (sent_ok)
+    {
+        ESP_LOGI(TAG,
+                 "Datos enviados a %s: %s",
+                 has_mac ? "HUB" : "broadcast",
+                 payload);
     }
     else
     {
-        ESP_LOGE(TAG, "Error al enviar datos: %s", esp_err_to_name(result));
+        ESP_LOGE(TAG,
+                 "No se pudo enviar telemetría al HUB tras %d intentos",
+                 max_retries);
     }
 }
+
+
 
 static void enter_deep_sleep(uint64_t sleep_time_us)
 {
@@ -229,6 +332,17 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_now_init());
+    // Semáforo para sincronizar el envío ESPNOW con el callback de TX
+    s_tx_done_sem = xSemaphoreCreateBinary();
+    if (!s_tx_done_sem)
+    {
+        ESP_LOGE(TAG, "No se pudo crear s_tx_done_sem");
+    }
+    else
+    {
+        ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
+    }
+
     ESP_ERROR_CHECK(esp_now_register_recv_cb(peer_manager_on_data_recv));
 
     // --- Periféricos propios de la esfera ---
