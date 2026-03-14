@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
@@ -10,16 +9,20 @@
 #include <string.h>
 #include "esp_mac.h"
 #include "esp_wifi.h"
+#include "esp_now.h"
+#include <time.h>
+#include "esp_log.h"
+#include "esp_log_level.h"
 #include "sensor_manager.h"
 #include "power_manager.h"
 #include "led_manager.h"
 #include "pump_controller.h"
 #include "peer_manager.h"
 #include "time_sync.h"
-#include "esp_now.h"
 #include "button_manager.h"
-#include <time.h>
 #include "test_manager.h"
+
+#include "sdkconfig.h"
 
 #define TAG "MAIN"
 #define BOOST_GPIO GPIO_NUM_2
@@ -29,6 +32,15 @@
 #define NVS_NAMESPACE "storage"
 #define NVS_KEY_CHANNEL "wifi_chan"
 #define DEFAULT_WIFI_CHANNEL 1
+
+
+#ifndef LOG_LOCAL_LEVEL
+    #ifdef CONFIG_LOG_DEFAULT_LEVEL
+        #define LOG_LOCAL_LEVEL CONFIG_LOG_MAXIMUN_LEVEL
+    #else
+        #define LOG_LOCAL_LEVEL 3 // Valor por defecto: INFO
+    #endif
+#endif
 
 static SemaphoreHandle_t s_tx_done_sem = NULL;
 static volatile esp_now_send_status_t s_last_tx_status = ESP_NOW_SEND_FAIL;
@@ -156,18 +168,21 @@ static void wait_hub_first_link_blocking(uint8_t current_channel) // <--- Nota: 
              hub_mac[3], hub_mac[4], hub_mac[5]);
 } */
 
-static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
+
+static void espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     s_last_tx_status = status;
 
     if (s_tx_done_sem)
     {
-        // Callback NO se ejecuta en ISR, se puede usar xSemaphoreGive normal
         xSemaphoreGive(s_tx_done_sem);
     }
 
-    if (mac_addr)
+    // Cambiamos 'target_addr' por 'addr'
+    if (tx_info && tx_info->des_addr) 
     {
+        const uint8_t *mac_addr = tx_info->des_addr;
+        
         ESP_LOGI(TAG,
                  "ESP-NOW TX %s a %02X:%02X:%02X:%02X:%02X:%02X",
                  (status == ESP_NOW_SEND_SUCCESS) ? "OK" : "FAIL",
@@ -176,8 +191,7 @@ static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status
     }
     else
     {
-        ESP_LOGI(TAG,
-                 "ESP-NOW TX %s (destino desconocido)",
+        ESP_LOGI(TAG, "ESP-NOW TX %s (destino desconocido)",
                  (status == ESP_NOW_SEND_SUCCESS) ? "OK" : "FAIL");
     }
 }
