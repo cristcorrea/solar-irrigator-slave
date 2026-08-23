@@ -198,18 +198,24 @@ static void espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send_status_t 
 
 static void send_data_to_hub(float temp, float hum, float vbat, bool irrigation_done, uint8_t current_channel)
 {
-    // ... [Mismo código de inicialización de payload y MAC que tenías antes] ...
-    uint8_t hub_mac[6];
-    esp_base_mac_addr_get(hub_mac); 
+    // La MAC declarada debe ser la misma interfaz Wi-Fi STA usada como remitente ESP-NOW.
+    uint8_t self_mac[6] = {0};
+    esp_err_t err_mac = esp_read_mac(self_mac, ESP_MAC_WIFI_STA);
+    if (err_mac != ESP_OK) {
+        ESP_LOGE(TAG, "No se pudo leer MAC propia para telemetría: %s", esp_err_to_name(err_mac));
+        return;
+    }
+
     uint8_t target_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; 
     bool has_mac = (peer_manager_load_hub_mac(target_mac) == 1);
 
     char payload[64];
+    // Formato esperado por el HUB actual: humedad,temperatura,voltaje,riego MAC
     snprintf(payload, sizeof(payload),
              "%.1f,%.1f,%.2f,%d %02X%02X%02X%02X%02X%02X",
              hum, temp, vbat, irrigation_done,
-             hub_mac[0], hub_mac[1], hub_mac[2],
-             hub_mac[3], hub_mac[4], hub_mac[5]);
+             self_mac[0], self_mac[1], self_mac[2],
+             self_mac[3], self_mac[4], self_mac[5]);
 
     if (!esp_now_is_peer_exist(target_mac)) {
         esp_now_peer_info_t peer = {
@@ -244,9 +250,14 @@ static void send_data_to_hub(float temp, float hum, float vbat, bool irrigation_
     }
 
     if (sent_ok) {
-        ESP_LOGI(TAG, "Datos enviados OK.");
+        ESP_LOGI(TAG,
+                 "Datos enviados a %s: %s",
+                 has_mac ? "HUB" : "broadcast",
+                 payload);
     } else {
-        ESP_LOGE(TAG, "Fallo critico enviando al HUB.");
+        ESP_LOGE(TAG, "Fallo critico enviando al HUB en canal %u. Payload: %s",
+                 (unsigned)current_channel,
+                 payload);
         // OPCIONAL: Si falla el envío en modo normal, ¿queremos cambiar de canal?
         // Si el HUB es móvil o cambia de canal dinámicamente, SÍ.
         // Si no, podríamos solo dormir y reintentar luego.
@@ -569,16 +580,35 @@ void app_main(void)
 
     ESP_LOGI(TAG, "[STATE 6] Leyendo sensores");
     float temp = 0, hum = 0;
-    sensor_manager_read_aht20(&temp, &hum);
+    esp_err_t sensor_err = sensor_manager_read_aht20(&temp, &hum);
+    bool sensors_ok = (sensor_err == ESP_OK);
     float vbat = power_manager_get_battery_level();
 
     char temp_str[8], hum_str[8], vbat_str[8];
-    snprintf(temp_str, sizeof(temp_str), "%.2f", temp);
-    snprintf(hum_str, sizeof(hum_str), "%.2f", hum);
+    if (sensors_ok)
+    {
+        snprintf(temp_str, sizeof(temp_str), "%.2f", temp);
+        snprintf(hum_str, sizeof(hum_str), "%.2f", hum);
+    }
+    else
+    {
+        snprintf(temp_str, sizeof(temp_str), "INVALID");
+        snprintf(hum_str, sizeof(hum_str), "INVALID");
+    }
     snprintf(vbat_str, sizeof(vbat_str), "%.2f", vbat);
 
     ESP_LOGI(TAG, "[STATE 7] Enviando datos al HUB");
-    ESP_LOGI(TAG, "Datos: Temp=%s°C, Hum=%s%%, VBAT=%sV", temp_str, hum_str, vbat_str);
+    if (sensors_ok)
+    {
+        ESP_LOGI(TAG, "Datos: Temp=%s°C, Hum=%s%%, VBAT=%sV", temp_str, hum_str, vbat_str);
+    }
+    else
+    {
+        ESP_LOGW(TAG,
+                 "Lectura AHT20 inválida (%s). No se enviará telemetría de temperatura/humedad.",
+                 esp_err_to_name(sensor_err));
+        ESP_LOGI(TAG, "Datos: Temp=%s, Hum=%s, VBAT=%sV", temp_str, hum_str, vbat_str);
+    }
 
     // [STATE 5] Verificación de riego post-sync
     ESP_LOGI(TAG, "[STATE 5] Verificando riego post-sync");
@@ -619,7 +649,11 @@ void app_main(void)
         ESP_LOGW(TAG, "[STATE 5] Sin config/hora válida tras respuesta; no se riega.");
     }
 
-    if (!pm_tx_try_lock(7000))
+    if (!sensors_ok)
+    {
+        ESP_LOGW(TAG, "Omito envío de telemetría: temperatura/humedad fuera de rango o lectura I2C inválida.");
+    }
+    else if (!pm_tx_try_lock(7000))
     {
         ESP_LOGW(TAG, "Omito envío: esperando ACK/timeout previo.");
     }
@@ -628,7 +662,7 @@ void app_main(void)
         /* ---------------------------------------------------------
          * 4. CORREGIDO: Pasar my_channel como 5to argumento
          * --------------------------------------------------------- */
-        send_data_to_hub(atof(temp_str), atof(hum_str), atof(vbat_str), irrigation_done, my_channel);
+        send_data_to_hub(temp, hum, vbat, irrigation_done, my_channel);
 
         if (cfg_ready_sem &&
             xSemaphoreTake(cfg_ready_sem, pdMS_TO_TICKS(2500)) != pdTRUE)

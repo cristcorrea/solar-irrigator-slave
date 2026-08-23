@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_err.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "driver/usb_serial_jtag.h"
@@ -261,11 +262,20 @@ void test_manager_start_cli(void)
                 }
             }
             else if (!strcmp(up, "AT+SENS?")) {
-                float t=0,h=0; sensor_manager_read_aht20(&t,&h);
+                float t=0,h=0;
+                esp_err_t sensor_err = sensor_manager_read_aht20(&t,&h);
                 float v = power_manager_get_battery_level();
-                char b[96]; int m = snprintf(b, sizeof(b), "T=%.2f,H=%.2f,VBAT=%.2f\r\n", t,h,v);
+                char b[96];
+                int m = 0;
+                if (sensor_err == ESP_OK) {
+                    m = snprintf(b, sizeof(b), "T=%.2f,H=%.2f,VBAT=%.2f\r\n", t,h,v);
+                } else {
+                    m = snprintf(b, sizeof(b), "SENS_ERR=%s,VBAT=%.2f\r\n",
+                                 esp_err_to_name(sensor_err),
+                                 v);
+                }
                 if (m > 0) usb_serial_jtag_write_bytes(b, m, 0);
-                tm_putln("OK");
+                tm_putln((sensor_err == ESP_OK) ? "OK" : "ERROR");
             }
             else if (!strncmp(up, "AT+IRR=", 7)) {
                 int ml = atoi(line + 7);

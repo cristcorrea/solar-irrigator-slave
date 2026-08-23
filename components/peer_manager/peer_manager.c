@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include "led_manager.h"
 #include "cJSON.h"
 #include "time.h"
@@ -242,6 +243,191 @@ static void handle_non_json_payload(const esp_now_recv_info_t *recv_info,
     ESP_LOGW(TAG, "Payload no-JSON recibido: '%s' (no se procesa).", payload);
 }
 
+static void log_raw_config_payload(const esp_now_recv_info_t *recv_info,
+                                   const uint8_t *data,
+                                   int data_len,
+                                   const char *buffer,
+                                   int buffer_len)
+{
+    char hex[256 * 3] = {0};
+    int pos = 0;
+
+    for (int i = 0; i < buffer_len && pos < (int)sizeof(hex); ++i)
+    {
+        int written = snprintf(hex + pos,
+                               sizeof(hex) - (size_t)pos,
+                               "%02X%s",
+                               data[i],
+                               (i == buffer_len - 1) ? "" : " ");
+        if (written <= 0)
+            break;
+        pos += written;
+    }
+
+    ESP_LOGI(TAG,
+             "Configuración recibida RAW de %02X:%02X:%02X:%02X:%02X:%02X | len=%d | texto='%.*s'",
+             recv_info->src_addr[0],
+             recv_info->src_addr[1],
+             recv_info->src_addr[2],
+             recv_info->src_addr[3],
+             recv_info->src_addr[4],
+             recv_info->src_addr[5],
+             data_len,
+             buffer_len,
+             buffer);
+
+    ESP_LOGI(TAG,
+             "Configuración recibida RAW HEX%s: %s",
+             (data_len > buffer_len) ? " (truncada al buffer local)" : "",
+             hex);
+}
+
+static bool parse_days_mask(const cJSON *jDays, uint8_t *mask_out)
+{
+    if (!mask_out)
+        return false;
+
+    char seven[16] = {0};
+
+    if (cJSON_IsString(jDays) && jDays->valuestring)
+    {
+        size_t len = strlen(jDays->valuestring);
+        if (len != 7)
+        {
+            ESP_LOGW(TAG, "diasRiego inválido: se esperaban 7 dígitos y llegó '%s'",
+                     jDays->valuestring);
+            return false;
+        }
+        snprintf(seven, sizeof(seven), "%s", jDays->valuestring);
+    }
+    else if (cJSON_IsNumber(jDays))
+    {
+        if (jDays->valueint < 0 || jDays->valueint > 1111111)
+        {
+            ESP_LOGW(TAG, "diasRiego numérico fuera de rango: %d", jDays->valueint);
+            return false;
+        }
+        snprintf(seven, sizeof(seven), "%07d", jDays->valueint);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "diasRiego ausente o con tipo inválido");
+        return false;
+    }
+
+    uint8_t mask = 0;
+    for (int i = 0; i < 7; ++i)
+    {
+        if (seven[i] == '1')
+        {
+            mask |= (uint8_t)(1u << (6 - i));
+        }
+        else if (seven[i] != '0')
+        {
+            ESP_LOGW(TAG, "diasRiego contiene un carácter inválido: '%c' en '%s'",
+                     seven[i],
+                     seven);
+            return false;
+        }
+    }
+
+    *mask_out = mask;
+    ESP_LOGI(TAG, "diasRiego interpretado: '%s' -> mask=0x%02X", seven, mask);
+    return true;
+}
+
+static bool parse_hora_riego(const cJSON *jHora, uint8_t *hr_out, uint8_t *mn_out)
+{
+    if (!hr_out || !mn_out)
+        return false;
+
+    unsigned int H = 0;
+    unsigned int M = 0;
+
+    if (cJSON_IsString(jHora) && jHora->valuestring)
+    {
+        const char *s = jHora->valuestring;
+        char extra = '\0';
+
+        if (sscanf(s, "%u:%u%c", &H, &M, &extra) == 2)
+        {
+            // Formato HH:MM.
+        }
+        else
+        {
+            size_t len = strlen(s);
+            if (len != 4)
+            {
+                ESP_LOGW(TAG, "horaRiego inválida: se esperaba 'HH:MM' o 'HHMM' y llegó '%s'", s);
+                return false;
+            }
+
+            for (size_t i = 0; i < len; ++i)
+            {
+                if (s[i] < '0' || s[i] > '9')
+                {
+                    ESP_LOGW(TAG, "horaRiego contiene un carácter inválido: '%c' en '%s'", s[i], s);
+                    return false;
+                }
+            }
+
+            H = (unsigned int)((s[0] - '0') * 10 + (s[1] - '0'));
+            M = (unsigned int)((s[2] - '0') * 10 + (s[3] - '0'));
+        }
+    }
+    else if (cJSON_IsNumber(jHora))
+    {
+        int value = jHora->valueint;
+        if (value < 0 || value > 2359)
+        {
+            ESP_LOGW(TAG, "horaRiego numérica fuera de rango: %d", value);
+            return false;
+        }
+
+        H = (unsigned int)(value / 100);
+        M = (unsigned int)(value % 100);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "horaRiego ausente o con tipo inválido");
+        return false;
+    }
+
+    if (H > 23 || M > 59)
+    {
+        ESP_LOGW(TAG, "horaRiego fuera de rango: %02u:%02u", H, M);
+        return false;
+    }
+
+    *hr_out = (uint8_t)H;
+    *mn_out = (uint8_t)M;
+    ESP_LOGI(TAG, "horaRiego interpretada: %02u:%02u", H, M);
+    return true;
+}
+
+static bool parse_ml(const cJSON *jMl, int *ml_out)
+{
+    if (!ml_out)
+        return false;
+
+    if (!cJSON_IsNumber(jMl))
+    {
+        ESP_LOGW(TAG, "ml ausente o con tipo inválido");
+        return false;
+    }
+
+    int ml = jMl->valueint;
+    if (ml < 0 || ml > 65535)
+    {
+        ESP_LOGW(TAG, "ml fuera de rango: %d", ml);
+        return false;
+    }
+
+    *ml_out = ml;
+    ESP_LOGI(TAG, "ml interpretado: %d", ml);
+    return true;
+}
+
 void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len)
 {
     if (!recv_info || !data || data_len <= 0)
@@ -291,6 +477,8 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
         return;
     }
 
+    log_raw_config_payload(recv_info, data, data_len, buffer, tocpy);
+
     cJSON *root = cJSON_Parse(buffer);
     if (!root)
     {
@@ -313,44 +501,42 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
     /* ===== FIN (A) ===== */
 
     // --- Parseo campos de configuración ---
-    // diasRiego: número de 7 dígitos (ej: 1111111) -> máscara L=bit6 ... D=bit0
+    // diasRiego: 7 dígitos L..D como string ("0000100") o número (100).
     uint8_t mask = 0;
     cJSON *jDays = cJSON_GetObjectItemCaseSensitive(root, "diasRiego");
-    if (cJSON_IsNumber(jDays))
+    if (!parse_days_mask(jDays, &mask))
     {
-        char seven[16];
-        snprintf(seven, sizeof(seven), "%07d", jDays->valueint);
-        for (int i = 0; i < 7; ++i)
-        {
-            if (seven[i] == '1')
-                mask |= (uint8_t)(1u << (6 - i));
-        }
+        ESP_LOGE(TAG, "Configuración inválida: no se pudo interpretar diasRiego.");
+        cJSON_Delete(root);
+        return;
     }
 
-    // horaRiego: "HH:MM"
+    // horaRiego: "HH:MM", "HHMM" o número HHMM.
     uint8_t hr = 0, mn = 0;
     cJSON *jHora = cJSON_GetObjectItemCaseSensitive(root, "horaRiego");
-    if (cJSON_IsString(jHora) && jHora->valuestring)
+    if (!parse_hora_riego(jHora, &hr, &mn))
     {
-        unsigned int H = 0, M = 0;
-        if (sscanf(jHora->valuestring, "%u:%u", &H, &M) == 2 && H <= 23 && M <= 59)
-        {
-            hr = (uint8_t)H;
-            mn = (uint8_t)M;
-        }
+        ESP_LOGE(TAG, "Configuración inválida: no se pudo interpretar horaRiego.");
+        cJSON_Delete(root);
+        return;
     }
 
     // ml: entero (0..65535)
     int ml = 0;
     cJSON *jMl = cJSON_GetObjectItemCaseSensitive(root, "ml");
-    if (cJSON_IsNumber(jMl))
+    if (!parse_ml(jMl, &ml))
     {
-        ml = jMl->valueint;
-        if (ml < 0)
-            ml = 0;
-        if (ml > 65535)
-            ml = 65535;
+        ESP_LOGE(TAG, "Configuración inválida: no se pudo interpretar ml.");
+        cJSON_Delete(root);
+        return;
     }
+
+    ESP_LOGI(TAG,
+             "Configuración interpretada: hora=%02u:%02u, dias_mask=0x%02X, ml=%d",
+             hr,
+             mn,
+             mask,
+             ml);
 
     // Construir config
     peer_data_t cfg = (peer_data_t){0};
