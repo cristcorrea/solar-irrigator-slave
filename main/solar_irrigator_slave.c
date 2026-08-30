@@ -32,6 +32,7 @@
 #define NVS_NAMESPACE "storage"
 #define NVS_KEY_CHANNEL "wifi_chan"
 #define DEFAULT_WIFI_CHANNEL 1
+#define DOCK_POLL_INTERVAL_S 20
 
 
 #ifndef LOG_LOCAL_LEVEL
@@ -532,6 +533,13 @@ void app_main(void)
      */
     if (first_boot)
     {
+        if (!power_manager_is_hub_connected_stable())
+        {
+            led_manager_set_rgb(0, 0, 0);
+            enter_deep_sleep((uint64_t)DOCK_POLL_INTERVAL_S * 1000000ULL);
+            return;
+        }
+
         /* ---------------------------------------------------------
          * 3. CORREGIDO: Pasar my_channel como argumento
          * --------------------------------------------------------- */
@@ -539,10 +547,14 @@ void app_main(void)
 
         ESP_LOGI(TAG, "[STATE 2] Esperando configuración inicial del HUB (JSON + ts)...");
 
-        if (cfg_ready_sem &&
-            xSemaphoreTake(cfg_ready_sem, portMAX_DELAY) != pdTRUE)
+        bool cfg_received = cfg_ready_sem &&
+                            xSemaphoreTake(cfg_ready_sem, pdMS_TO_TICKS(30000)) == pdTRUE;
+        if (!cfg_received)
         {
-            ESP_LOGE(TAG, "cfg_ready_sem no liberado en primer emparejamiento.");
+            ESP_LOGW(TAG, "Timeout esperando configuracion inicial del HUB.");
+            led_manager_set_rgb(0, 0, 0);
+            enter_deep_sleep((uint64_t)DOCK_POLL_INTERVAL_S * 1000000ULL);
+            return;
         }
 
         if (!peer_manager_load_irrigation_config(&cfg_hr, &cfg_min, &cfg_days, &cfg_ml))
@@ -559,6 +571,24 @@ void app_main(void)
 
         ESP_LOGI(TAG, "Config inicial recibida.");
         peer_manager_perform_cfg_ack_handshake();
+
+        /* Enviar una primera telemetria antes de dormir tras el emparejamiento. */
+        float first_temp = 0.0f, first_hum = 0.0f;
+        float first_vbat = power_manager_get_battery_level();
+        esp_err_t first_sensor_err = sensor_manager_read_aht20(&first_temp, &first_hum);
+
+        if (first_sensor_err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "Enviando primera telemetria al HUB.");
+            send_data_to_hub(first_temp, first_hum, first_vbat, false, my_channel);
+        }
+        else
+        {
+            ESP_LOGW(TAG,
+                     "No se pudo leer AHT20 (%s); se omite la primera telemetria.",
+                     esp_err_to_name(first_sensor_err));
+        }
+
         led_manager_start_animation_2(0, 20, 0);
 
         uint64_t sleep_time_us = time_sync_get_next_wakeup_from_mask(cfg_days, cfg_hr, cfg_min);

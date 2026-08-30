@@ -7,6 +7,8 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define TAG "POWER_MANAGER"
 #define VBAT_ADC_CHANNEL ADC_CHANNEL_3 // GPIO3 = ADC1_CH3
@@ -15,6 +17,8 @@
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t cali_handle = NULL;
+static bool s_gpio_power_initialized = false;
+static bool s_hub_connected_stable = false;
 
 void gpio_power_init()
 {
@@ -23,7 +27,7 @@ void gpio_power_init()
         .pin_bit_mask = 1ULL << GPIO_POWER_CONNECTED,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
 
@@ -37,6 +41,34 @@ void gpio_power_init()
 
     gpio_config(&io10_config);
     gpio_config(&io4_config);
+    s_gpio_power_initialized = true;
+}
+
+bool power_manager_is_hub_connected(void)
+{
+    if (!s_gpio_power_initialized)
+    {
+        gpio_power_init();
+    }
+
+    return gpio_get_level(GPIO_POWER_CONNECTED) == 1;
+}
+
+bool power_manager_is_hub_connected_stable(void)
+{
+    bool sample = power_manager_is_hub_connected();
+
+    for (int i = 1; i < 5; i++)
+    {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (power_manager_is_hub_connected() != sample)
+        {
+            return s_hub_connected_stable;
+        }
+    }
+
+    s_hub_connected_stable = sample;
+    return s_hub_connected_stable;
 }
 
 void power_manager_init(void) {

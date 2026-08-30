@@ -16,6 +16,7 @@
 #include "time.h"
 #include "time_sync.h"
 #include "esp_mac.h"
+#include "power_manager.h"
 
 #define TAG "PEER_MANAGER"
 #define NVS_NAMESPACE "storage"
@@ -192,6 +193,12 @@ static void handle_non_json_payload(const esp_now_recv_info_t *recv_info,
     /* 1) Handshake: HELLO del HUB -> respondemos con nuestra MAC */
     if (strncmp(payload, "HELLO_ESFERA", strlen("HELLO_ESFERA")) == 0)
     {
+        if (!power_manager_is_hub_connected())
+        {
+            ESP_LOGW(TAG, "Sin acople: HELLO_ESFERA descartado");
+            return;
+        }
+
         ESP_LOGI(TAG, "HELLO_ESFERA recibido; enviando respuesta al HUB.");
 
         // Leer MAC propia (Wi-Fi STA)
@@ -436,6 +443,21 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
         return;
     }
     pm_tx_unlock();
+
+    if (!power_manager_is_hub_connected())
+    {
+        uint8_t stored[6];
+        if (peer_manager_load_hub_mac(stored) != 1)
+        {
+            ESP_LOGW(TAG, "Sin acople y sin hub guardado: mensaje descartado");
+            return;
+        }
+        if (memcmp(stored, recv_info->src_addr, 6) != 0)
+        {
+            ESP_LOGW(TAG, "Sin acople: mensaje de hub ajeno descartado");
+            return;
+        }
+    }
     // 1) Guardar MAC del HUB si no existe o cambió
     uint8_t stored[6];
     bool have = (peer_manager_load_hub_mac(stored) == 1);
