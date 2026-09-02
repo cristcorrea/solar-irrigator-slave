@@ -51,18 +51,21 @@ stateDiagram-v2
     state PrimerArranque {
         [*] --> EsperaHello: LED rojo parpadeando
         EsperaHello --> RotarCanal: timeout 2 s sin HELLO
-        RotarCanal --> [*]: guarda canal siguiente (1→6→11→1) y reinicia
+        RotarCanal --> [*]: guarda canal siguiente (1→2→...→13→1) y reinicia
         EsperaHello --> EsperaConfig: HELLO_ESFERA recibido → responde HELLO_HUB
         EsperaConfig --> Handshake: JSON de config + ts recibido y guardado
         Handshake --> Dormir1: CFG_OK ↔ ACK_END, LED verde
     }
 
     state CicloNormal {
-        [*] --> Medir: leer AHT20 + VBAT
+        [*] --> Medir: leer AHT20 + mediana de 5 VBAT
         Medir --> Regar: hoy activo y hora en ventana de +180 s
         Medir --> Enviar: no toca regar
+        Medir --> Enviar: batería bloqueada; no regar
         Regar --> Enviar
-        Enviar --> EsperarConfig: telemetría enviada (3 reintentos)
+        Enviar --> Barrer: 3 ciclos sin entrega
+        Barrer --> EsperarConfig: prueba canales 1..13 sin reiniciar
+        Enviar --> EsperarConfig: telemetría v2 (3 intentos)
         EsperarConfig --> CalcularSleep: config+ts recibidos (o timeout 2.5 s)
     }
 
@@ -73,7 +76,7 @@ stateDiagram-v2
 
 ## 5. Arranque y gestión de canal
 
-El canal Wi-Fi/ESP-NOW se guarda en NVS (`storage/wifi_chan`, por defecto 1). En el primer emparejamiento, si en **2 segundos** no llega el `HELLO_ESFERA` del HUB, la esfera rota el canal (1 → 6 → 11 → 1), lo persiste y **se reinicia** para aplicar el cambio limpio. Así converge al canal donde realmente esté el HUB (que intenta operar en el 6, pero en modo online su canal lo dicta el router).
+El canal Wi-Fi/ESP-NOW se guarda en NVS (`storage/wifi_chan`, por defecto 1). En el primer emparejamiento, si en **2 segundos** no llega el `HELLO_ESFERA` del HUB, la esfera avanza al canal siguiente (1 → 2 → … → 13 → 1), lo persiste y **se reinicia** para aplicar el cambio limpio. Así converge al canal que el router haya impuesto al HUB. Durante la búsqueda, el LED rojo parpadea; recorrer los 13 canales, incluyendo la espera y los reinicios, puede tardar aproximadamente 40 segundos en el peor caso.
 
 ```mermaid
 flowchart TD
@@ -111,15 +114,16 @@ sequenceDiagram
     Note over ESF: LED verde, calcula próxima ventana,<br/>deep sleep
 ```
 
-Si el semáforo se libera pero la config en NVS no es válida, la esfera queda en un bucle de LED rojo (fallo visible, requiere intervención).
+Si el semáforo se libera pero la config en NVS no es válida, la esfera muestra el LED rojo con ciclo 250 ms encendido / 750 ms apagado durante 30 s y después duerme 20 s. En cada despertar vuelve a comprobar el acople y se recupera automáticamente cuando el HUB entrega una configuración válida.
 
 ## 7. Ciclo normal (despertar programado)
 
 Orden real del código (los "STATE n" de los logs):
 
-1. **Medir**: AHT20 (si la lectura es incoherente/incompleta ⇒ no se envía telemetría) y VBAT por ADC.
-2. **Verificar riego**: con config de NVS y reloj válido (epoch ≥ 2023), riega si *hoy* está activo en la máscara y la hora actual está dentro de `[hora_objetivo, hora_objetivo+180 s]`. El riego es **bloqueante** (ver §8).
-3. **Enviar telemetría**: payload CSV `hum,temp,vbat,riego MACESFERA` al HUB (unicast si hay MAC guardada; si no, broadcast), con confirmación del callback TX y **3 reintentos**. Un "TX guard" (`pm_tx_try_lock`, 7 s) evita envíos solapados.
+1. **Medir**: AHT20 y mediana de 5 lecturas VBAT válidas por ADC. Los errores ADC (`-1.0`) se descartan; si fallan las cinco se usa `vbat=0.00` y no se bloquea el riego. Si falla el AHT20 se usan `hum=0.0,temp=0.0`, pero la telemetría se envía siempre.
+2. **Verificar riego**: con config de NVS y reloj válido (epoch ≥ 2023), riega si *hoy* está activo en la máscara y la hora actual está dentro de `[hora_objetivo, hora_objetivo+180 s]`. El riego es **bloqueante** (ver §8). VBAT <3,35 V bloquea la bomba hasta que VBAT >3,45 V; VBAT <3,55 V solo marca aviso. La histéresis vive en RTC memory.
+3. **Enviar telemetría v2**: payload CSV exacto `hum,temp,vbat,riego,ml,st MACESFERA`, sin terminador nulo, con confirmación del callback TX y **3 intentos**. `ml` son los mililitros medidos por el caudalímetro y `st` es el mapa de estado (AHT20, corte por flujo, batería, omisión de riego y hora válida).
+   Tras 3 ciclos sin entrega, la esfera prueba los 13 canales en el mismo despertar, sin reiniciar, y persiste el canal que responde. Tras 5 barridos completos fallidos pasa a barrer una vez cada 6 despertares.
 4. **Esperar respuesta** (≤2.5 s): el HUB siempre contesta reenviando la configuración con `ts` fresco ⇒ la esfera se re-sincroniza el reloj y adopta cambios de configuración **en cada ciclo**.
 5. **Handshake de ACK** si había config nueva pendiente (CFG_OK ↔ ACK_END).
 6. **Dormir**: `time_sync_get_next_wakeup_from_mask` calcula el tiempo hasta la próxima hora de riego activa, con **tope de 1 h** — para ventanas lejanas la esfera duerme en siestas de 1 h encadenadas. Sin config ⇒ fallback 1 h. Antes de dormir: `esp_now_deinit`, `esp_wifi_stop`, boost off, retención de GPIOs, wakeup por timer y por botón.
@@ -134,13 +138,13 @@ flowchart TD
     D --> E{pulsos ≥ objetivo}
     E -- Sí --> H
     E -- No --> F{5 s sin pulsos}
-    F -- Sí --> H["Bomba OFF (GPIO6=1)<br/>log de ml entregados"]
+    F -- Sí --> H["Bomba OFF (GPIO6=1)<br/>devuelve ml reales y corte por flujo"]
     F -- No --> G{"> 10 min total"}
     G -- Sí --> H
     G -- No --> D
 ```
 
-Las dos salidas de seguridad protegen contra depósito vacío / manguera pinzada (timeout de flujo 5 s) y contra un caudalímetro que cuenta de menos (timeout absoluto 10 min). `pump_controller_stop()` permite corte manual (usado por el modo test).
+Las dos salidas de seguridad protegen contra depósito vacío / manguera pinzada (timeout de flujo 5 s) y contra un caudalímetro que cuenta de menos (timeout absoluto 10 min). `pump_controller_irrigate()` devuelve los ml medidos, saturados a 65535, y señala por separado el corte por falta de caudal. `pump_controller_stop()` permite corte manual (usado por el modo test).
 
 ## 9. Protocolo con el HUB (`peer_manager`)
 
@@ -166,7 +170,7 @@ Tolerancia de formatos (importante para compatibilidad app/hub):
 
 | Clave | Contenido |
 |---|---|
-| `wifi_chan` | Canal Wi-Fi actual (rotación 1→6→11) |
+| `wifi_chan` | Canal Wi-Fi actual (rotación 1→2→…→13→1) |
 | `hub_mac` | MAC del HUB emparejado (blob 6 bytes) |
 | `cfg_hr` / `cfg_min` / `cfg_days` / `cfg_ml` | Configuración de riego |
 | `cfg_src` | MAC de quien envió la config (informativo) |
@@ -177,7 +181,7 @@ Tolerancia de formatos (importante para compatibilidad app/hub):
 
 - **El reloj depende del HUB**: no hay RTC ni SNTP; tras un reset la hora es inválida hasta que llega un JSON con `ts`. `time_sync_is_valid()` (epoch ≥ 2023) protege de regar con hora basura, pero un ciclo sin contacto con el HUB tampoco riega. `time_sync_request_time()` es un stub que solo lee el reloj local.
 - **Ventana de riego de 180 s**: si la esfera despierta >3 min tarde (deriva del RTC en deep sleep, siestas encadenadas), el riego de ese día se pierde. La app lo detecta como alerta de "riego fallido".
-- **`riego` en la telemetría**: se envía `irrigation_done` que hoy queda siempre en `false` — el flag no se actualiza tras regar, así que el HUB/app nunca ven `riego=1` en el ciclo normal. Revisar si se quiere reportar el riego efectivo.
+- **Semántica de `riego`**: vale 1 cuando se intentó regar, incluso si el caudal fue insuficiente. `ml` contiene lo realmente entregado y `st.bit1` distingue el corte por falta de caudal.
 - **Deriva del deep sleep**: dormir en tramos de ≤1 h con re-sincronización en cada contacto con el HUB es la mitigación elegida contra la deriva del oscilador.
-- Si el envío de telemetría falla los 3 intentos, la lectura de ese ciclo **se pierde** (no hay buffer local de pendientes en la esfera; el buffer persistente vive en el HUB).
+- Si el envío y su eventual barrido fallan, la lectura de ese ciclo **se pierde** (no hay buffer local de pendientes en la esfera; el buffer persistente vive en el HUB). Los contadores de recuperación sí sobreviven al deep sleep en RTC memory.
 - `sleep_mode_active` es un flag global que permite desactivar el deep sleep (útil en pruebas).

@@ -282,7 +282,7 @@ void test_manager_start_cli(void)
                 if (ml <= 0) tm_putln("ERROR");
                 else {
                     pump_controller_stop(); vTaskDelay(pdMS_TO_TICKS(50));
-                    pump_controller_irrigate(ml);
+                    pump_controller_irrigate(ml, NULL);
                     tm_putln("OK");
                 }
             }

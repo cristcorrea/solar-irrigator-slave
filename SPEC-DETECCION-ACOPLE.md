@@ -1,3 +1,10 @@
+> [!WARNING]
+> **Documento desactualizado (2026-09-02).** Los puntos C1 a C5 que aqui figuran como pendientes ya
+> estan implementados: pull-down en GPIO10, compuerta de acople en `peer_manager` y en `app_main`,
+> timeout de 30 s en `cfg_ready_sem` y CLI AT desactivado. Ademas la prohibicion de tocar la rotacion
+> de canal `1 -> 6 -> 11` esta contradicha por un cambio sin commitear que barre los 13 canales.
+> Estado real de la esfera y su contrato con el hub: `D:\Firmware\SISTEMA-SMARTGROW.md`.
+
 # ESPECIFICACIÓN — Detección de acople al HUB (GPIO10) en el firmware de la esfera
 
 **Proyecto:** `solar-irrigator-slave` (ESP32-C3, ESP-IDF)

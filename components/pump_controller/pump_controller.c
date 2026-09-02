@@ -74,19 +74,23 @@ float irrigation_pulses_to_ml(uint32_t pulses)
 }
 
 
-void pump_controller_irrigate(int ml)
+uint16_t pump_controller_irrigate(int ml, bool *cut_by_flow)
 {
     s_stop_requested = false;
+    if (cut_by_flow != NULL)
+    {
+        *cut_by_flow = false;
+    }
 
     if (ml <= 0)
     {
         ESP_LOGW(TAG, "ml <= 0; nada que regar");
-        return;
+        return 0;
     }
     if (ML_PER_PULSE <= 0.0f)
     {
         ESP_LOGE(TAG, "ML_PER_PULSE inválido (%.3f)", (double)ML_PER_PULSE);
-        return;
+        return 0;
     }
 
     // Pulsos necesarios (redondeo hacia arriba: al menos 1 pulso si ml>0)
@@ -136,6 +140,10 @@ void pump_controller_irrigate(int ml)
             if (no_pulse_cycles * check_period_ms >= max_no_pulse_ms)
             {
                 ESP_LOGE(TAG, "Flow timeout (%d ms sin pulsos). Parando bomba.", max_no_pulse_ms);
+                if (cut_by_flow != NULL)
+                {
+                    *cut_by_flow = true;
+                }
                 break;
             }
         }
@@ -160,6 +168,12 @@ void pump_controller_irrigate(int ml)
     float ml_entregados = irrigation_pulses_to_ml(pulse_count);
     ESP_LOGI(TAG, "Irrigation finished. Pulses=%d/%d -> %.1f ml",
              pulse_count, pulses_needed, ml_entregados);
+
+    if (ml_entregados >= 65535.0f)
+    {
+        return UINT16_MAX;
+    }
+    return (uint16_t)(ml_entregados + 0.5f);
 }
 
 void pump_controller_stop(void)

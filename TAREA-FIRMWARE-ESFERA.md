@@ -1,3 +1,9 @@
+> [!WARNING]
+> **Documento desactualizado (2026-09-02).** Las tareas C1 a C5 estan implementadas y verificadas en
+> el codigo. La prohibicion numero 5 (preservar la rotacion de canal `1 -> 6 -> 11`) esta contradicha
+> por un cambio sin commitear en `main/solar_irrigator_slave.c` que barre los 13 canales: hay que
+> decidir cual de los dos manda. Estado real: `D:\Firmware\SISTEMA-SMARTGROW.md`.
+
 # TAREA — Compuerta de acople en el firmware de la esfera
 
 **Repositorio a modificar:** `solar-irrigator-slave` (ESP32-C3, ESP-IDF).
