@@ -38,8 +38,6 @@ void peer_manager_save_hub_mac(const uint8_t *mac);
 void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len);
 bool peer_manager_load_irrigation_config(uint8_t *hr, uint8_t *mn, uint8_t *days, uint16_t *ml);
 void peer_manager_log_saved_irrigation_config(void);
-bool pm_tx_try_lock(int timeout_ms);
-void pm_tx_unlock(void);
 void peer_manager_perform_cfg_ack_handshake(void);
 
 

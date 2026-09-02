@@ -1,7 +1,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
 #include "peer_manager.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -41,43 +40,10 @@ static uint8_t s_cfg_ack_hub_mac[6] = {0};
 
 static SemaphoreHandle_t s_cfg_ready_sem = NULL;
 
-// --- TX guard mínimal ---
-static volatile bool s_tx_busy = false;
-static TimerHandle_t s_tx_guard = NULL;
-
 void peer_manager_set_cfg_ready_semaphore(SemaphoreHandle_t sem)
 {
     s_cfg_ready_sem = sem;
 }
-
-static void s_tx_guard_cb(TimerHandle_t xTimer)
-{
-    s_tx_busy = false; // libera por timeout
-}
-
-bool pm_tx_try_lock(int timeout_ms)
-{
-    if (s_tx_busy)
-        return false; // ya hay uno en vuelo
-    s_tx_busy = true; // tomo el lock
-    if (!s_tx_guard)
-    {
-        s_tx_guard = xTimerCreate("pm_tx_guard",
-                                  pdMS_TO_TICKS(timeout_ms),
-                                  pdFALSE, NULL, s_tx_guard_cb);
-    }
-    xTimerChangePeriod(s_tx_guard, pdMS_TO_TICKS(timeout_ms), 0);
-    xTimerStart(s_tx_guard, 0);
-    return true;
-}
-
-void pm_tx_unlock(void)
-{
-    s_tx_busy = false; // libera por ACK
-    if (s_tx_guard)
-        xTimerStop(s_tx_guard, 0);
-}
-// --- fin TX guard ---
 
 int peer_manager_load_hub_mac(uint8_t *hub_mac)
 {
@@ -442,8 +408,6 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
         ESP_LOGW(TAG, "on_data_recv: argumentos inválidos");
         return;
     }
-    pm_tx_unlock();
-
     if (!power_manager_is_hub_connected())
     {
         uint8_t stored[6];
