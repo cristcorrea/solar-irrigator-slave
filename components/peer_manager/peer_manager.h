@@ -37,6 +37,7 @@ int  peer_manager_load_hub_mac(uint8_t *hub_mac); // hoy retorna 1/0 en tu .c
 void peer_manager_save_hub_mac(const uint8_t *mac);
 void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len);
 bool peer_manager_load_irrigation_config(uint8_t *hr, uint8_t *mn, uint8_t *days, uint16_t *ml);
+bool peer_manager_load_led_color(uint32_t *color);
 void peer_manager_log_saved_irrigation_config(void);
 void peer_manager_perform_cfg_ack_handshake(void);
 

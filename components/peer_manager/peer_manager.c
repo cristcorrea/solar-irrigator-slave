@@ -25,6 +25,7 @@
 #define NVS_KEY_CFG_MIN "cfg_min"
 #define NVS_KEY_CFG_DAYS "cfg_days"
 #define NVS_KEY_CFG_ML "cfg_ml"
+#define NVS_KEY_LED_COLOR "cfg_led_color"
 #define NVS_KEY_CFG_SRC "cfg_src"     // opcional: quién envió la config
 #define NVS_KEY_CFG_VALID "cfg_valid" // 1 cuando hay config válida
 
@@ -126,6 +127,21 @@ static esp_err_t peer_manager_save_irrigation_config(const peer_data_t *d, const
     err = nvs_commit(h);
 
 out:
+    nvs_close(h);
+    return err;
+}
+
+static esp_err_t peer_manager_save_led_color(uint32_t color)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK)
+        return err;
+
+    err = nvs_set_u32(h, NVS_KEY_LED_COLOR, color);
+    if (err == ESP_OK)
+        err = nvs_commit(h);
+
     nvs_close(h);
     return err;
 }
@@ -401,6 +417,33 @@ static bool parse_ml(const cJSON *jMl, int *ml_out)
     return true;
 }
 
+static bool parse_led_color(const cJSON *jColor, uint32_t *color_out)
+{
+    if (!color_out || !cJSON_IsNumber(jColor))
+    {
+        ESP_LOGW(TAG, "colorLED ausente o con tipo invalido; se conserva el anterior");
+        return false;
+    }
+
+    double value = jColor->valuedouble;
+    if (value < 0.0 || value > 16777215.0)
+    {
+        ESP_LOGW(TAG, "colorLED fuera de rango; se conserva el anterior");
+        return false;
+    }
+
+    uint32_t color = (uint32_t)value;
+    if ((double)color != value)
+    {
+        ESP_LOGW(TAG, "colorLED no es entero; se conserva el anterior");
+        return false;
+    }
+
+    *color_out = color;
+    ESP_LOGI(TAG, "colorLED interpretado: 0x%06lX", (unsigned long)color);
+    return true;
+}
+
 void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len)
 {
     if (!recv_info || !data || data_len <= 0)
@@ -524,6 +567,11 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
              mask,
              ml);
 
+    // colorLED es cosmetico: si falta o es invalido, el riego sigue siendo valido.
+    uint32_t led_color = 0;
+    cJSON *jColor = cJSON_GetObjectItemCaseSensitive(root, "colorLED");
+    bool led_color_valid = parse_led_color(jColor, &led_color);
+
     // Construir config
     peer_data_t cfg = (peer_data_t){0};
     cfg.hora_riego = hr;
@@ -555,6 +603,16 @@ void peer_manager_on_data_recv(const esp_now_recv_info_t *recv_info, const uint8
     if (se == ESP_OK)
     {
         ESP_LOGI(TAG, "Configuración (JSON) guardada en NVS. Marcando ACK pendiente...");
+
+        if (led_color_valid)
+        {
+            esp_err_t color_err = peer_manager_save_led_color(led_color);
+            if (color_err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "No se pudo guardar colorLED; el riego continua: %s",
+                         esp_err_to_name(color_err));
+            }
+        }
 
         // Asegurar peer unicast al HUB (por si acaso)
         if (!esp_now_is_peer_exist(recv_info->src_addr))
@@ -621,6 +679,26 @@ bool peer_manager_load_irrigation_config(uint8_t *hr, uint8_t *mn, uint8_t *days
     if (ml)
         *ml = _ml;
 
+    return true;
+}
+
+bool peer_manager_load_led_color(uint32_t *color)
+{
+    if (!color)
+        return false;
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+        return false;
+
+    uint32_t saved_color = 0;
+    esp_err_t err = nvs_get_u32(h, NVS_KEY_LED_COLOR, &saved_color);
+    nvs_close(h);
+
+    if (err != ESP_OK || saved_color > 0xFFFFFFu)
+        return false;
+
+    *color = saved_color;
     return true;
 }
 

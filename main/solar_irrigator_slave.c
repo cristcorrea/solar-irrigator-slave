@@ -82,6 +82,29 @@ RTC_DATA_ATTR static uint8_t s_sweep_fail_count;
 RTC_DATA_ATTR static bool s_irrigation_blocked_low_battery;
 bool sleep_mode_active = true;
 
+static uint8_t scale_led_component(uint8_t component)
+{
+    // Escala 0..255 a 0..32, redondeando al entero mas cercano.
+    return (uint8_t)(((uint16_t)component * 32u + 127u) / 255u);
+}
+
+static void start_configured_led_animation(void)
+{
+    uint32_t color = 0;
+    if (!peer_manager_load_led_color(&color) || color == 0)
+    {
+        led_manager_start_animation_2(0, 20, 0);
+        return;
+    }
+
+    uint8_t r = scale_led_component((uint8_t)(color >> 16));
+    uint8_t g = scale_led_component((uint8_t)(color >> 8));
+    uint8_t b = scale_led_component((uint8_t)color);
+    ESP_LOGI(TAG, "Confirmacion LED: color=0x%06lX, RGB escalado=(%u,%u,%u)",
+             (unsigned long)color, (unsigned)r, (unsigned)g, (unsigned)b);
+    led_manager_start_animation_2(r, g, b);
+}
+
 
 // Función para obtener el canal actual de la NVS
 static uint8_t get_stored_wifi_channel(void)
@@ -710,7 +733,7 @@ void app_main(void)
         send_data_to_hub(first_temp, first_hum, first_vbat, false, 0,
                          first_status, my_channel);
 
-        led_manager_start_animation_2(0, 20, 0);
+        start_configured_led_animation();
 
         uint64_t sleep_time_us = time_sync_get_next_wakeup_from_mask(cfg_days, cfg_hr, cfg_min);
         ESP_LOGI(TAG, "Primer ciclo: sleep time calculado.");
@@ -856,6 +879,6 @@ void app_main(void)
     }
 
     peer_manager_perform_cfg_ack_handshake();
-    led_manager_start_animation_2(0, 20, 0);
+    start_configured_led_animation();
     enter_deep_sleep(sleep_time_us);
 }
